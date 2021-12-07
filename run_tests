@@ -1,0 +1,59 @@
+#!/bin/zsh
+
+edac=$2
+file=$1
+simdir=/home/dramm/Documents/TCC/hf-riscv-sim/hf-riscv-sim.sim/sim_1/behav/xsim
+vivado=/opt/Xilinx/Vivado/2020.2/bin/vivado
+srcdir=/home/dramm/Documents/TCC/hf-risc/software
+logdir=/home/dramm/Documents/TCC/logs
+export PATH=/home/dramm/Documents/TCC/hf-risc/tools/riscv-toolchain/riscv32-unknown-elf/gcc-8.3.0/bin/:$PATH
+
+while read line; do
+    errors=`echo ${line} | cut -d"," -f1`
+    seed=`echo ${line} | cut -d"," -f2`
+    #change SEED and ERRORS in c code
+    sed -i '17s/.*/#define SEED         '$seed'/' $srcdir/app/tasker2.c
+    sed -i '18s/.*/#define ERRORS       '$errors'/' $srcdir/app/tasker2.c
+    cd $srcdir
+    make clean && make tasker2
+    #get task2 start address in lst
+    addr_start=`awk 'c&&!--c; /<task2>:/{c=5}' $srcdir/code.lst | cut -d":" -f1`
+    #add offset to start address to get end address
+    addr_end=`echo "obase=16;"$(calc 0x$addr_start+0xF4) | bc`
+    #update range in .c
+    sed -i '19s/.*/#define ADDR_START  0x'$addr_start'/' $srcdir/app/tasker2.c
+    sed -i '20s/.*/#define ADDR_FINISH 0x'$addr_end'/' $srcdir/app/tasker2.c
+    make clean && make tasker2
+    #check task2 range in lst
+    if [ $addr_start != `awk 'c&&!--c; /<task2>:/{c=5}' $srcdir/code.lst | cut -d":" -f1` ]; then
+        echo "check ADDR RANGE"
+        break
+    fi
+    mv ~/Documents/TCC/hf-risc/software/code.txt ~/Documents/TCC/hf-riscv-sim/hf-riscv-sim.srcs/sim_1/imports/software/code.txt
+    #run vivado tcl script
+    $vivado -mode batch -source /home/dramm/Documents/TCC/simulate.tcl
+    #check for DOUBLE detection in debug.txt
+    if grep -q DOUBLE $simdir/debug.txt; then
+        if diff <(tail -1 $simdir/debug.txt) $logdir/golden_double.txt; then
+            #mark as detected
+            echo "DETECTED"
+            result=Detected
+        else
+            #mark as system failure
+            echo "SYSTEM FAILURE"
+            result=Failure
+        fi
+    else
+        if diff <(tail -22 $simdir/debug.txt) $logdir/golden.txt; then
+            #mark as corrected
+            echo "CORRECTED"
+            result=Corrected
+        else
+            #mark as system failure
+            echo "SYSTEM FAILURE"
+            result=Failure
+        fi
+    fi
+    cp $simdir/debug.txt $logdir/$edac.$errors.$seed
+    echo "$errors,$seed,$result" >> $logdir/log.$edac.csv
+done < ${file}
